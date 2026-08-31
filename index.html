@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rotatrix: Gravity Rush</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Canvas de fondo espacial que cubre toda la pantalla -->
+    <canvas id="bg-canvas"></canvas>
+
+    <div id="score-board">
+        <div>NIVEL: <span id="val-level">1</span>/50</div>
+        <div>SCORE: <span id="val-score">0</span></div>
+    </div>
+
+    <div id="progress-container">
+        <div id="level-bar"></div>
+        <span id="level-label">NIVEL 1 - 0%</span>
+    </div>
+
+    <div id="fever-container">
+        <div id="fever-bar"></div>
+        <span id="fever-label">FEVER MODE</span>
+    </div>
+
+    <div id="game-box">
+        <canvas id="cvs" width="360" height="360"></canvas>
+        
+        <!-- Pantalla Inicial -->
+        <div id="mask">
+            <h1>ROTATRIX</h1>
+            <p class="subtitle">GRAVITY RUSH</p>
+            <button id="btn-start">¡JUGAR!</button>
+        </div>
+
+        <!-- Pantalla de Pausa -->
+        <div id="pause-mask" class="hidden">
+            <h2>PAUSA</h2>
+            <p>Presiona [P] o toca aquí para continuar</p>
+        </div>
+
+        <!-- Pantalla Impactante de Game Over -->
+        <div id="game-over-mask" class="hidden">
+            <h1 class="go-title">GAME OVER</h1>
+            <div class="go-stats">
+                <div class="stat-item">PUNTOS: <span id="go-score">0</span></div>
+                <div class="stat-item">NIVEL: <span id="go-level">1</span></div>
+                <div class="stat-item hi">RÉCORD: <span id="go-hi">0</span></div>
+            </div>
+            <button id="btn-restart">REINTENTAR</button>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="btn-act" id="btn-left">↺</button>
+        <button class="btn-act" id="btn-drop">⤓</button>
+        <button class="btn-act" id="btn-right">↻</button>
+    </div>
+
+    <div id="key-hints">
+        <span>[←/A] Izq</span>
+        <span>[↓/ESPACIO] Caída</span>
+        <span>[→/D] Der</span>
+        <span>[P] Pausa</span>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
