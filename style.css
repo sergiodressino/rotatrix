@@ -124,6 +124,22 @@ canvas#cvs {
     align-items: center;
     justify-content: center;
     z-index: 50;
+    padding: 20px;
+}
+
+#main-menu, #arcade-menu, #practice-menu {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+.menu-buttons, .mode-options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 70%;
+    max-width: 200px;
 }
 
 #mask h1 {
@@ -133,12 +149,102 @@ canvas#cvs {
     text-shadow: 0 0 10px #00F5FF, 0 0 25px #FF007F;
     letter-spacing: 5px;
 }
+
+#mask h2 {
+    color: #00F5FF;
+    font-size: 24px;
+    margin: 0 0 15px 0;
+    text-shadow: 0 0 8px #00F5FF;
+    letter-spacing: 3px;
+}
+
 .subtitle {
     color: #FF007F;
     font-size: 11px;
     letter-spacing: 4px;
     margin: 4px 0 20px 0;
     text-shadow: 0 0 8px #FF007F;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Practice Settings Layout */
+.practice-settings {
+    width: 85%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 15px;
+}
+
+.setting-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #00F5FF;
+    background: rgba(255, 0, 127, 0.1);
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+
+.setting-item span span {
+    color: #FFB800;
+    font-weight: bold;
+}
+
+.spin-ctrl {
+    display: flex;
+    gap: 5px;
+}
+
+.spin-ctrl button, #p-wave-toggle {
+    background: #120a21;
+    color: #FFF;
+    border: 1px solid #FF007F;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+#p-wave-toggle {
+    min-width: 60px;
+}
+
+.btn-mode, #btn-arcade-menu, #btn-practice-menu, #btn-practice-start, .btn-back {
+    background: rgba(255, 255, 255, 0.05);
+    color: #FFF;
+    border: 1px solid #00F5FF;
+    padding: 8px 15px;
+    font-size: 12px;
+    font-weight: bold;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 1px;
+}
+
+#btn-practice-start {
+    background: linear-gradient(45deg, #FF007F, #00F5FF);
+    border: none;
+    margin-bottom: 10px;
+    width: 60%;
+}
+
+.btn-back {
+    border-color: #FF007F;
+    color: #FF007F;
+    margin-top: 10px;
+    padding: 4px 15px;
+    font-size: 10px;
+}
+
+.btn-mode:hover, #btn-arcade-menu:hover, #btn-practice-menu:hover {
+    background: rgba(0, 245, 255, 0.2);
+    box-shadow: 0 0 10px rgba(0, 245, 255, 0.5);
 }
 
 #pause-mask h2 {
@@ -217,6 +323,18 @@ canvas#cvs {
 }
 #btn-start:hover, #btn-restart:hover {
     transform: scale(1.06);
+}
+
+@media (max-height: 500px) {
+    #game-box {
+        margin-top: 10px;
+    }
+    #score-board, #progress-container, #fever-container {
+        transform: scale(0.8);
+    }
+    #score-board { top: 0; }
+    #progress-container { top: 22px; }
+    #fever-container { top: 36px; }
 }
 
 .controls {

@@ -28,11 +28,64 @@
     <div id="game-box">
         <canvas id="cvs" width="360" height="360"></canvas>
         
-        <!-- Pantalla Inicial -->
+        <!-- Pantalla Inicial y Menús -->
         <div id="mask">
-            <h1>ROTATRIX</h1>
-            <p class="subtitle">GRAVITY RUSH</p>
-            <button id="btn-start">¡JUGAR!</button>
+            <div id="main-menu">
+                <h1>ROTATRIX</h1>
+                <p class="subtitle">GRAVITY RUSH</p>
+                <div class="menu-buttons">
+                    <button id="btn-arcade-menu">MODO ARCADE</button>
+                    <button id="btn-practice-menu">MODO PRÁCTICA</button>
+                </div>
+            </div>
+
+            <!-- Menú Arcade -->
+            <div id="arcade-menu" class="hidden">
+                <h2>ARCADE</h2>
+                <div class="mode-options">
+                    <button class="btn-mode" data-mode="easy">FÁCIL</button>
+                    <button class="btn-mode" data-mode="normal">NORMAL</button>
+                    <button class="btn-mode" data-mode="hard">DIFÍCIL</button>
+                    <button class="btn-mode" data-mode="adrenaline">ADRENALINA</button>
+                </div>
+                <button class="btn-back">VOLVER</button>
+            </div>
+
+            <!-- Menú Práctica -->
+            <div id="practice-menu" class="hidden">
+                <h2>PRÁCTICA</h2>
+                <div class="practice-settings">
+                    <div class="setting-item">
+                        <span>PIEZAS: <span id="val-p-colors">4</span></span>
+                        <div class="spin-ctrl">
+                            <button id="p-colors-down">-</button>
+                            <button id="p-colors-up">+</button>
+                        </div>
+                    </div>
+                    <div class="setting-item">
+                        <span>VELOCIDAD: <span id="val-p-speed">1X</span></span>
+                        <div class="spin-ctrl">
+                            <button id="p-speed-down">-</button>
+                            <button id="p-speed-up">+</button>
+                        </div>
+                    </div>
+                    <div class="setting-item">
+                        <span>FEVER: <span id="val-p-fever">NORMAL</span></span>
+                        <div class="spin-ctrl">
+                            <button id="p-fever-down">-</button>
+                            <button id="p-fever-up">+</button>
+                        </div>
+                    </div>
+                    <div class="setting-item">
+                        <span>OLEADA: <span id="val-p-wave">OFF</span></span>
+                        <div class="spin-ctrl">
+                            <button id="p-wave-toggle">ON/OFF</button>
+                        </div>
+                    </div>
+                </div>
+                <button id="btn-practice-start">¡JUGAR!</button>
+                <button class="btn-back">VOLVER</button>
+            </div>
         </div>
 
         <!-- Pantalla de Pausa -->

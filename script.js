@@ -19,7 +19,16 @@ var SENS = 8, N = 7, CX = 180, CY = 180;
 var R_INT = 20, R_EXT = 135;
 var AN = (R_EXT - R_INT) / N, PASO = (Math.PI * 2) / SENS;
 
-var COLS = [null, '#FF007F', '#05FFA1', '#00F5FF', '#FFB800', '#00FF00'];
+var COLS = [null, '#FF007F', '#05FFA1', '#00F5FF', '#FFB800', '#00FF00', '#2E67FF', '#A020F0', '#808080', '#FFA500', '#FFFF00'];
+
+var gameMode = 'arcade'; // 'arcade' or 'practice'
+var difficulty = 'normal';
+var practiceSettings = {
+    colors: 4,
+    speedMult: 1,
+    feverFreq: 'NORMAL',
+    waveEnabled: false
+};
 
 var grid, piece = null, pieceSecondary = null, nextP = null, running = false, isPaused = false, isGameOver = false;
 var rotV = 0, rotT = 0;
@@ -33,6 +42,8 @@ var currentLevel = 1, levelProgress = 0;
 var feverPoints = 0, isFeverActive = false;
 var feverDurationMs = 12000;
 var feverEndTime = 0;
+var feverStartTime = 0; // Seguimiento del inicio para efectos
+var feverTransitioning = false; // Estado para transiciones
 var pauseStartTime = 0;
 var bombaFinalPendiente = false;
 var rachaSinMatch = 0, tiempoUltimaBomba = Date.now();
@@ -92,7 +103,29 @@ function renderFondoEspacial(now) {
     bgCtx.fillStyle = isFeverActive ? 'rgba(8, 2, 18, 0.55)' : 'rgba(3, 3, 8, 0.4)';
     bgCtx.fillRect(0, 0, w, h);
 
-    var speedZ = isFeverActive ? 28.0 : 3.5;
+    // Lógica de aceleración/desaceleración de estrellas
+    var speedZ = 3.5;
+    var targetSpeedZ = isFeverActive ? 28.0 : 3.5;
+    
+    var timeElapsed = Date.now() - (isFeverActive ? feverStartTime : feverEndTime);
+    var transitionDuration = 2000; // 2 segundos de transición
+
+    if (timeElapsed < transitionDuration) {
+        var t = timeElapsed / transitionDuration;
+        // Ease in-out simple
+        var factor = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+        
+        if (isFeverActive) {
+            // Acelerando al inicio del fever
+            speedZ = 3.5 + (28.0 - 3.5) * factor;
+        } else {
+            // Desacelerando al final del fever
+            speedZ = 28.0 - (28.0 - 3.5) * factor;
+        }
+    } else {
+        speedZ = targetSpeedZ;
+    }
+
     var colorPalettes = ['#00F5FF', '#FF007F', '#FFB800'];
 
     // Dibujar todas las estrellas en un solo path por color
@@ -530,7 +563,21 @@ function registrarPiezaDestruida() {
             var completedLevel = currentLevel;
             currentLevel++;
             levelProgress = 0;
-            speed = 1.0 + ((currentLevel - 1) * 0.02);
+            
+            var speedBase = 1.0;
+            var speedIncr = 0.02;
+            
+            if (gameMode === 'arcade') {
+                if (difficulty === 'hard') {
+                    speedBase = 1.1;
+                } else if (difficulty === 'adrenaline') {
+                    speedBase = 1.15;
+                }
+            } else {
+                speedBase = practiceSettings.speedMult;
+            }
+
+            speed = speedBase + ((currentLevel - 1) * speedIncr);
 
             addTextSplash('LEVEL ' + completedLevel + ' COMPLETED!', '#05FFA1', true);
             playLevelUpSound();
@@ -552,15 +599,49 @@ function registrarPiezaDestruida() {
 
 function getNextPieceData() {
     var ahora = Date.now();
-    var esBomba = bombaFinalPendiente || (rachaSinMatch >= 10) || (ahora - tiempoUltimaBomba >= 40000);
+    
+    var bombProb = 40000;
+    if (gameMode === 'arcade') {
+        if (difficulty === 'adrenaline') bombProb = 25000;
+    } else {
+        if (practiceSettings.feverFreq === 'FRECUENTE') bombProb = 25000;
+        if (practiceSettings.feverFreq === 'MUY FRECUENTE') bombProb = 12000;
+    }
+
+    var esBomba = bombaFinalPendiente || (rachaSinMatch >= 10) || (ahora - tiempoUltimaBomba >= bombProb);
     if (esBomba) {
         rachaSinMatch = 0;
         tiempoUltimaBomba = ahora;
         bombaFinalPendiente = false;
     }
-    // Colores disponibles: 1=magenta, 3=cyan, 4=amarillo (sin verde #2 para evitar confusión con bomba)
-    var pieceColors = [1, 3, 4];
-    var randomColor = pieceColors[Math.floor(Math.random() * pieceColors.length)];
+
+    var numColors = 4;
+    var allowedIndices = [1, 3, 4]; // Magenta, Cyan, Amarilla (Evitar Verde #2)
+
+    if (gameMode === 'arcade') {
+        if (difficulty === 'easy') {
+            allowedIndices = [1, 3, 4];
+        } else if (difficulty === 'normal') {
+            allowedIndices = [1, 3, 4, 6]; 
+        } else if (difficulty === 'hard' || difficulty === 'adrenaline') {
+            allowedIndices = [1, 3, 4, 6, 7];
+        }
+    } else {
+        numColors = practiceSettings.colors;
+        allowedIndices = [];
+        for (var i = 1; i <= numColors; i++) {
+            if (i !== 2) allowedIndices.push(i); // Saltar el verde de la bomba
+        }
+        // Si el usuario pidió N colores, nos aseguramos de tener N colores que no sean el 2
+        while (allowedIndices.length < numColors) {
+            var nextIdx = allowedIndices.length + 1;
+            if (nextIdx === 2) nextIdx++;
+            if (nextIdx > 10) break;
+            allowedIndices.push(nextIdx);
+        }
+    }
+
+    var randomColor = allowedIndices[Math.floor(Math.random() * allowedIndices.length)];
     return { dir: Math.floor(Math.random() * SENS), color: esBomba ? 5 : randomColor };
 }
 
@@ -571,7 +652,8 @@ function spawn() {
     piece = { dir: nextP.dir, r: R_EXT + 100, spd: spdActual, color: nextP.color };
 
     if (isFeverActive && piece.color !== 5) {
-        pieceSecondary = { dir: (nextP.dir + 4) % SENS, r: R_EXT + 100, spd: spdActual, color: Math.floor(Math.random() * 4) + 1 };
+        // En Fever Mode, forzamos que la segunda pieza sea del mismo color para facilitar combos
+        pieceSecondary = { dir: (nextP.dir + 4) % SENS, r: R_EXT + 100, spd: spdActual, color: piece.color };
     } else {
         pieceSecondary = null;
     }
@@ -681,14 +763,24 @@ function triggerGameOver() {
 
 function addFeverProgress(amount) {
     if (isFeverActive || isGameOver) return;
-    feverPoints += amount;
+    
+    var mult = 1.0;
+    if (gameMode === 'arcade' && difficulty === 'adrenaline') mult = 1.8;
+    if (gameMode === 'practice') {
+        if (practiceSettings.feverFreq === 'FRECUENTE') mult = 1.8;
+        if (practiceSettings.feverFreq === 'MUY FRECUENTE') mult = 3.5;
+    }
+
+    feverPoints += amount * mult;
     if (feverPoints >= 100) {
         feverPoints = 100;
         isFeverActive = true;
-        feverEndTime = Date.now() + feverDurationMs;
+        feverStartTime = Date.now();
+        feverEndTime = feverStartTime + feverDurationMs;
         feverBar.style.width = '100%';
         addTextSplash('FEVER 12s EXTREME!', '#FFB800', true);
         shake = 15;
+        soundFeverTransition(true);
         startMusic();
     } else {
         feverBar.style.width = feverPoints + '%';
@@ -701,6 +793,76 @@ function addScore(pts) {
     document.getElementById('val-score').innerText = score;
     if (score > hi) { hi = score; localStorage.setItem('radiax_hi', hi); }
     addFeverProgress(pts * 0.4);
+}
+
+function soundFeverTransition(isStarting) {
+    try {
+        if (!audioCtx || !masterGain || audioCtx.state !== 'running') return;
+        var t = audioCtx.currentTime;
+        var dur = 2.2;
+        
+        // 1. Capa de "Motor/Turbina" (Oscilador SuperSaw)
+        var oscs = [];
+        var detunes = [-10, -5, 0, 5, 10];
+        var gEngine = audioCtx.createGain();
+        
+        detunes.forEach(function(d) {
+            var o = audioCtx.createOscillator();
+            o.type = 'sawtooth';
+            o.detune.setValueAtTime(d, t);
+            if (isStarting) {
+                o.frequency.setValueAtTime(60, t);
+                o.frequency.exponentialRampToValueAtTime(800, t + dur);
+            } else {
+                o.frequency.setValueAtTime(800, t);
+                o.frequency.exponentialRampToValueAtTime(60, t + dur);
+            }
+            o.connect(gEngine);
+            oscs.push(o);
+        });
+
+        // 2. Filtro Resonante (Barrido de frecuencia espacial)
+        var filt = audioCtx.createBiquadFilter();
+        filt.type = 'lowpass';
+        filt.Q.setValueAtTime(15, t); // Alta resonancia para el "silbido" espacial
+        if (isStarting) {
+            filt.frequency.setValueAtTime(100, t);
+            filt.frequency.exponentialRampToValueAtTime(8000, t + dur);
+        } else {
+            filt.frequency.setValueAtTime(8000, t);
+            filt.frequency.exponentialRampToValueAtTime(100, t + dur);
+        }
+
+        // 3. Capa de Ruido (Viento estelar)
+        var noise = audioCtx.createBufferSource();
+        noise.buffer = cachedWhiteNoise;
+        var gNoise = audioCtx.createGain();
+        var nFilt = audioCtx.createBiquadFilter();
+        nFilt.type = 'bandpass';
+        nFilt.frequency.setValueAtTime(isStarting ? 500 : 4000, t);
+        nFilt.frequency.exponentialRampToValueAtTime(isStarting ? 4000 : 500, t + dur);
+        
+        gNoise.gain.setValueAtTime(0, t);
+        gNoise.gain.linearRampToValueAtTime(0.1, t + 0.5);
+        gNoise.gain.linearRampToValueAtTime(0, t + dur);
+
+        // Envolvente principal
+        gEngine.gain.setValueAtTime(0, t);
+        gEngine.gain.linearRampToValueAtTime(0.2, t + 0.2);
+        gEngine.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+        // Conexiones
+        gEngine.connect(filt);
+        filt.connect(masterGain);
+        
+        noise.connect(nFilt);
+        nFilt.connect(gNoise);
+        gNoise.connect(masterGain);
+
+        oscs.forEach(function(o) { o.start(t); o.stop(t + dur); });
+        noise.start(t);
+        noise.stop(t + dur);
+    } catch(e) {}
 }
 
 // Rotación 100% fluida sin reinicios de audio
@@ -748,38 +910,96 @@ function addTextSplash(txt, col, isBig) {
 
 function detonarBomba(sectorCentro, nivelCentro) {
     animLock = true;
-    freeze = 18;
-    shake = 28.0;
+    freeze = 22;
+    shake = 32.0;
     soundBombExplode();
 
+    var n = nivelCentro;
+    var sectoresADestruir = [];
+    var modoExplosion = "NORMAL";
 
-    var filaImpacto = nivelCentro;
-    var filaAbajo = nivelCentro - 1;
+    // --- 1. DETECCIÓN DE COMBOS NATURALES (Filas N-1, N, N+1) ---
+    var filasABuscar = [n - 1, n, n + 1];
+    var hayComboNatural = false;
 
-    // 1. Marcar con Flash blanco brillante todas las piezas a destruir
-    for (var s = 0; s < SENS; s++) {
-        if (grid[s][filaImpacto] && grid[s][filaImpacto].color !== 0) {
-            grid[s][filaImpacto].flash = 35;
+    for (var i = 0; i < filasABuscar.length; i++) {
+        var r = filasABuscar[i];
+        if (r < 0 || r >= N) continue;
+        for (var s = 0; s < SENS; s++) {
+            var c = grid[s][r].color;
+            if (c === 0 || c >= 5) continue;
+            // Combo horizontal
+            if (grid[(s + 1) % SENS][r].color === c && grid[(s + 2) % SENS][r].color === c) {
+                hayComboNatural = true; break;
+            }
+            // Combo vertical
+            if (r < N - 2 && grid[s][r + 1].color === c && grid[s][r + 2].color === c) {
+                hayComboNatural = true; break;
+            }
         }
-        if (filaAbajo >= 0 && grid[s][filaAbajo] && grid[s][filaAbajo].color !== 0) {
-            grid[s][filaAbajo].flash = 35;
+        if (hayComboNatural) break;
+    }
+
+    if (hayComboNatural) {
+        modoExplosion = "COMBO_TRIPLE";
+        addTextSplash("SMART BOMB: COMBO DETECTED!", "#05FFA1", true);
+        // Destruir las 3 filas
+        filasABuscar.forEach(function(r) {
+            if (r >= 0 && r < N) {
+                for (var s = 0; s < SENS; s++) if (grid[s][r].color !== 0) sectoresADestruir.push({s: s, n: r});
+            }
+        });
+    } 
+
+    // --- 2. TRANSFORMACIÓN DE COLOR (Si no hay combo, intentar crear uno en N o N-1) ---
+    if (sectoresADestruir.length === 0) {
+        var filasTransformar = [n, n - 1];
+        var transformado = false;
+        for (var i = 0; i < filasTransformar.length; i++) {
+            var r = filasTransformar[i];
+            if (r < 0 || r >= N) continue;
+            for (var s = 0; s < SENS; s++) {
+                if (grid[s][r].color === 0 || grid[s][r].color >= 5) continue;
+                // Probar si cambiando este color a uno de sus vecinos horizontales crea un match
+                var colorVecino = grid[(s + 1) % SENS][r].color;
+                if (colorVecino > 0 && colorVecino < 5 && grid[(s - 1 + SENS) % SENS][r].color === colorVecino) {
+                    grid[s][r].color = colorVecino; // ¡Transformación!
+                    transformado = true;
+                }
+                if (transformado) break;
+            }
+            if (transformado) {
+                modoExplosion = "TRANSFORM";
+                addTextSplash("SMART BOMB: COLOR SYNC!", "#00F5FF", true);
+                filasTransformar.forEach(function(r2) {
+                    if (r2 >= 0 && r2 < N) {
+                        for (var s = 0; s < SENS; s++) if (grid[s][r2].color !== 0) sectoresADestruir.push({s: s, n: r2});
+                    }
+                });
+                break;
+            }
         }
     }
 
-    // 2. Destruir y generar explosión radial tras el destello visible
-    setTimeout(function() {
+    // --- 3. FALLBACK: ELIMINAR ANILLO COMPLETO ---
+    if (sectoresADestruir.length === 0) {
+        addTextSplash("RING CLEAR", "#FFB800");
         for (var s = 0; s < SENS; s++) {
-            if (grid[s][filaImpacto].color !== 0) {
-                createExplosionAmpliada(s, filaImpacto, COLS[grid[s][filaImpacto].color] || '#00FF00');
-                grid[s][filaImpacto] = { color: 0, off: 0, flash: 0 };
-                registrarPiezaDestruida();
-            }
-            if (filaAbajo >= 0 && grid[s][filaAbajo].color !== 0) {
-                createExplosionAmpliada(s, filaAbajo, COLS[grid[s][filaAbajo].color] || '#00FF00');
-                grid[s][filaAbajo] = { color: 0, off: 0, flash: 0 };
-                registrarPiezaDestruida();
-            }
+            if (grid[s][n].color !== 0) sectoresADestruir.push({s: s, n: n});
         }
+    }
+
+    // --- EJECUCIÓN ---
+    sectoresADestruir.forEach(function(pos) { grid[pos.s][pos.n].flash = 35; });
+
+    setTimeout(function() {
+        sectoresADestruir.forEach(function(pos) {
+            if (grid[pos.s][pos.n].color !== 0) {
+                createExplosionAmpliada(pos.s, pos.n, COLS[grid[pos.s][pos.n].color] || '#00FF00');
+                grid[pos.s][pos.n] = { color: 0, off: 0, flash: 0 };
+                registrarPiezaDestruida();
+            }
+        });
 
         setTimeout(function() {
             aplicarGravedadCascada();
@@ -854,7 +1074,14 @@ function update() {
             isFeverActive = false;
             feverPoints = 0;
             feverBar.style.width = '0%';
+            feverEndTime = Date.now(); // Para la desaceleración del fondo
             bombaFinalPendiente = true;
+
+            soundFeverTransition(false);
+
+            if ((gameMode === 'practice' && practiceSettings.waveEnabled) || (gameMode === 'arcade' && difficulty === 'adrenaline')) {
+                triggerWaveMode();
+            }
 
             startMusic();
         }
@@ -901,6 +1128,36 @@ function update() {
     if (algunoAterrizo && !piece && !pieceSecondary) {
         combo = 0; rachaSinMatch++; checkMatches();
     }
+}
+
+function triggerWaveMode() {
+    if (isGameOver) return;
+    animLock = true;
+    var step = 0;
+    var waveInterval = setInterval(function() {
+        if (isGameOver || step >= SENS) {
+            clearInterval(waveInterval);
+            animLock = false;
+            if (!piece && !pieceSecondary) spawn();
+            return;
+        }
+        
+        var colIdx = [1, 3, 4, 6, 7][step % 5];
+        
+        var targetN = -1;
+        for (var n = 0; n < N; n++) { if (grid[step][n].color === 0) { targetN = n; break; } }
+        
+        if (targetN !== -1) {
+            grid[step][targetN] = { color: colIdx, off: 60, flash: 15 };
+            createExplosion(step, targetN, COLS[colIdx]);
+            soundImpact();
+        } else {
+            triggerGameOver();
+            clearInterval(waveInterval);
+        }
+        
+        step++;
+    }, 90); // Ajustado a 90ms según pedido
 }
 
 function checkMatches() {
@@ -1198,7 +1455,15 @@ function startGame() {
     pauseMask.classList.add('hidden');
     gameOverMask.classList.add('hidden');
 
-    score = 0; speed = 1.0;
+    var speedBase = 1.0;
+    if (gameMode === 'arcade') {
+        if (difficulty === 'hard') speedBase = 1.1;
+        if (difficulty === 'adrenaline') speedBase = 1.15;
+    } else {
+        speedBase = practiceSettings.speedMult;
+    }
+
+    score = 0; speed = speedBase;
     currentLevel = 1; levelProgress = 0;
     document.getElementById('val-level').innerText = 1;
     levelBar.style.width = '0%';
@@ -1215,6 +1480,7 @@ function startGame() {
     shock = [];
     halos = [];
     stepM = 0;
+    animLock = false;
 
     // Reset melodía secundaria
     secondaryDeepActive = false;
@@ -1226,7 +1492,78 @@ function startGame() {
     setTimeout(initAudio, 50);
 }
 
-btnStart.onclick = startGame;
+// --- MANEJO DE MENÚS ---
+var mainMenu = document.getElementById('main-menu');
+var arcadeMenu = document.getElementById('arcade-menu');
+var practiceMenu = document.getElementById('practice-menu');
+
+document.getElementById('btn-arcade-menu').onclick = function() {
+    mainMenu.classList.add('hidden');
+    arcadeMenu.classList.remove('hidden');
+};
+
+document.getElementById('btn-practice-menu').onclick = function() {
+    mainMenu.classList.add('hidden');
+    practiceMenu.classList.remove('hidden');
+};
+
+document.querySelectorAll('.btn-back').forEach(function(btn) {
+    btn.onclick = function() {
+        arcadeMenu.classList.add('hidden');
+        practiceMenu.classList.add('hidden');
+        mainMenu.classList.remove('hidden');
+    };
+});
+
+document.querySelectorAll('.btn-mode').forEach(function(btn) {
+    btn.onclick = function() {
+        gameMode = 'arcade';
+        difficulty = btn.getAttribute('data-mode');
+        startGame();
+    };
+});
+
+// Settings Práctica
+document.getElementById('p-colors-up').onclick = function() {
+    if (practiceSettings.colors < 10) practiceSettings.colors++;
+    document.getElementById('val-p-colors').innerText = practiceSettings.colors;
+};
+document.getElementById('p-colors-down').onclick = function() {
+    if (practiceSettings.colors > 1) practiceSettings.colors--;
+    document.getElementById('val-p-colors').innerText = practiceSettings.colors;
+};
+
+document.getElementById('p-speed-up').onclick = function() {
+    if (practiceSettings.speedMult < 5) practiceSettings.speedMult += 0.5;
+    document.getElementById('val-p-speed').innerText = practiceSettings.speedMult + 'X';
+};
+document.getElementById('p-speed-down').onclick = function() {
+    if (practiceSettings.speedMult > 1) practiceSettings.speedMult -= 0.5;
+    document.getElementById('val-p-speed').innerText = practiceSettings.speedMult + 'X';
+};
+
+var feverOptions = ['NORMAL', 'FRECUENTE', 'MUY FRECUENTE'];
+document.getElementById('p-fever-up').onclick = function() {
+    var idx = feverOptions.indexOf(practiceSettings.feverFreq);
+    if (idx < feverOptions.length - 1) practiceSettings.feverFreq = feverOptions[idx + 1];
+    document.getElementById('val-p-fever').innerText = practiceSettings.feverFreq;
+};
+document.getElementById('p-fever-down').onclick = function() {
+    var idx = feverOptions.indexOf(practiceSettings.feverFreq);
+    if (idx > 0) practiceSettings.feverFreq = feverOptions[idx - 1];
+    document.getElementById('val-p-fever').innerText = practiceSettings.feverFreq;
+};
+
+document.getElementById('p-wave-toggle').onclick = function() {
+    practiceSettings.waveEnabled = !practiceSettings.waveEnabled;
+    document.getElementById('val-p-wave').innerText = practiceSettings.waveEnabled ? 'ON' : 'OFF';
+};
+
+document.getElementById('btn-practice-start').onclick = function() {
+    gameMode = 'practice';
+    startGame();
+};
+
 btnRestart.onclick = startGame;
 
 pauseMask.onclick = function() {
