@@ -15,9 +15,15 @@ var feverBar = document.getElementById('fever-bar');
 var levelBar = document.getElementById('level-bar');
 var levelLabel = document.getElementById('level-label');
 
-var SENS = 8, N = 7, CX = 180, CY = 180;
+var CANVAS_SIZE = 440;
+var SENS = 8, N = 8, CX = CANVAS_SIZE / 2, CY = CANVAS_SIZE / 2;
 var R_INT = 20, R_EXT = 135;
 var AN = (R_EXT - R_INT) / N, PASO = (Math.PI * 2) / SENS;
+// Distancia extra (fuera del anillo de juego) donde las piezas ya son visibles cayendo.
+// Antes las piezas nacían fuera del área visible del canvas y solo se veían caer los
+// últimos ~45px (menos de 3 filas). Ahora nacen justo en el borde visible del círculo,
+// dando más de 5 filas de anticipación antes de llegar al anillo de juego.
+var R_SPAWN_OFFSET = CX - R_EXT;
 
 var COLS = [null, '#FF007F', '#05FFA1', '#00F5FF', '#FFB800', '#00FF00', '#2E67FF', '#A020F0', '#808080', '#FFA500', '#FFFF00'];
 
@@ -40,13 +46,20 @@ var speed = 1.0, combo = 0;
 
 var currentLevel = 1, levelProgress = 0;
 var feverPoints = 0, isFeverActive = false;
-var feverDurationMs = 12000;
+var feverDurationMs = 10000;
 var feverEndTime = 0;
 var feverStartTime = 0; // Seguimiento del inicio para efectos
 var feverTransitioning = false; // Estado para transiciones
 var pauseStartTime = 0;
 var bombaFinalPendiente = false;
 var rachaSinMatch = 0, tiempoUltimaBomba = Date.now();
+// true cuando una pieza acaba de ocupar la última fila (fila 8) de su sector.
+// Si el chequeo de matches que sigue no produce NINGUNA explosión, ahí recién se pierde.
+var pendienteChequeoUltimaFila = false;
+// Datos de la transición de nivel diferida: se llena cuando se completa un nivel
+// dentro de una cadena de matches/bomba, y se consume al terminar de resolverla.
+var nivelRecienCompletado = null;
+var lastBombTickTime = 0;
 
 // --- ESTRUCTURAS Y CACHÉ PRE-ASIGNADAS ---
 var cachedWhiteNoise = null;
@@ -359,6 +372,53 @@ function playGameOverSound() {
     } catch(e) {}
 }
 
+function soundVictoryEpic() {
+    try {
+        if (!audioCtx || !masterGain || audioCtx.state !== 'running') return;
+        var t = audioCtx.currentTime;
+        var dur = 3.0;
+        var notes = [523.25, 659.25, 783.99, 1046.50, 783.99, 1046.50, 1318.51];
+        notes.forEach(function(f, i) {
+            var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+            o.type = 'square';
+            o.frequency.setValueAtTime(f, t + i * 0.15);
+            g.gain.setValueAtTime(0.1, t + i * 0.15);
+            g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.15 + 0.5);
+            o.connect(g); g.connect(masterGain);
+            o.start(t + i * 0.15); o.stop(t + i * 0.15 + 0.5);
+        });
+        // Fanfarria final sostenida
+        var oF = audioCtx.createOscillator(), gF = audioCtx.createGain();
+        oF.type = 'sawtooth';
+        oF.frequency.setValueAtTime(1046.50, t + 1.2);
+        gF.gain.setValueAtTime(0, t + 1.2);
+        gF.gain.linearRampToValueAtTime(0.15, t + 1.3);
+        gF.gain.linearRampToValueAtTime(0, t + 3.0);
+        oF.connect(gF); gF.connect(masterGain);
+        oF.start(t + 1.2); oF.stop(t + 3.0);
+    } catch(e) {}
+}
+
+var lastWarningSoundTime = 0;
+function soundWarningAlarm() {
+    var now = Date.now();
+    // Sonar solo una vez cada 5 segundos si persiste el riesgo
+    if (now - lastWarningSoundTime < 5000) return; 
+    lastWarningSoundTime = now;
+    try {
+        if (!audioCtx || !masterGain || audioCtx.state !== 'running') return;
+        var t = audioCtx.currentTime;
+        var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(880, t);
+        o.frequency.exponentialRampToValueAtTime(440, t + 0.3);
+        g.gain.setValueAtTime(0.15, t);
+        g.gain.linearRampToValueAtTime(0, t + 0.3);
+        o.connect(g); g.connect(masterGain);
+        o.start(t); o.stop(t + 0.3);
+    } catch(e) {}
+}
+
 // --- COMPOSICIÓN TECHNO-MELANCÓLICA EN DO MENOR (Cm - Ab - Fm - G) ---
 
 // 1. Melodía Grave & Melancólica Principal (Cuerpo Analógico Cálido)
@@ -534,6 +594,123 @@ function soundBombExplode() {
     } catch(e) {}
 }
 
+// --- SONIDOS DE LA PIEZA BOMBA (VERDE RADIACTIVA) ---
+
+// Sonido al APARECER la bomba: sirena electrónica ascendente con vibrato tipo "radiactivo" + ping metálico
+function soundBombAppear() {
+    try {
+        if (!audioCtx || !masterGain || audioCtx.state !== 'running') return;
+        var t = audioCtx.currentTime;
+
+        var osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+        var lfo = audioCtx.createOscillator(), lfoGain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(220, t);
+        osc.frequency.exponentialRampToValueAtTime(900, t + 0.35);
+        lfo.type = 'sine';
+        lfo.frequency.setValueAtTime(30, t); // trémolo rápido, efecto "geiger"
+        lfoGain.gain.setValueAtTime(55, t);
+        lfo.connect(lfoGain); lfoGain.connect(osc.frequency);
+
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.34, t + 0.05);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+
+        osc.connect(g); g.connect(masterGain);
+        lfo.start(t); osc.start(t);
+        lfo.stop(t + 0.42); osc.stop(t + 0.42);
+        lfo.onended = function() { lfo.disconnect(); lfoGain.disconnect(); };
+        osc.onended = function() { osc.disconnect(); g.disconnect(); };
+
+        // Ping metálico agudo de aviso
+        var ping = audioCtx.createOscillator(), gp = audioCtx.createGain();
+        ping.type = 'square';
+        ping.frequency.setValueAtTime(1500, t + 0.06);
+        gp.gain.setValueAtTime(0.14, t + 0.06);
+        gp.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        ping.connect(gp); gp.connect(masterGain);
+        ping.start(t + 0.06); ping.stop(t + 0.2);
+        ping.onended = function() { ping.disconnect(); gp.disconnect(); };
+    } catch(e) {}
+}
+
+// Tick tipo contador Geiger mientras la bomba cae. intensity 0..1 = qué tan cerca está de aterrizar.
+function soundBombTick(intensity) {
+    try {
+        if (!audioCtx || !cachedWhiteNoise || !masterGain || audioCtx.state !== 'running') return;
+        var t = audioCtx.currentTime;
+
+        var noise = audioCtx.createBufferSource();
+        noise.buffer = cachedWhiteNoise;
+        var filt = audioCtx.createBiquadFilter();
+        filt.type = 'bandpass';
+        filt.frequency.setValueAtTime(2200 + intensity * 1800, t);
+        filt.Q.setValueAtTime(9, t);
+        var gN = audioCtx.createGain();
+        gN.gain.setValueAtTime(0.16 + intensity * 0.14, t);
+        gN.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+        noise.connect(filt); filt.connect(gN); gN.connect(masterGain);
+        noise.start(t); noise.stop(t + 0.05);
+
+        var osc = audioCtx.createOscillator(), go = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(950 + intensity * 550, t);
+        go.gain.setValueAtTime(0.055, t);
+        go.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+        osc.connect(go); go.connect(masterGain);
+        osc.start(t); osc.stop(t + 0.05);
+        osc.onended = function() { osc.disconnect(); go.disconnect(); };
+    } catch(e) {}
+}
+
+// Explosión de la bomba al detonar: blast poderoso con graves intensos, más significativo
+// que el sonido de un match normal (soundBombExplode)
+function soundBombDetonateBlast() {
+    try {
+        if (!audioCtx || !cachedWhiteNoise || !masterGain || audioCtx.state !== 'running') return;
+        var t = audioCtx.currentTime;
+
+        // 1. Estampido de ruido masivo
+        var noise = audioCtx.createBufferSource();
+        noise.buffer = cachedWhiteNoise;
+        var filt = audioCtx.createBiquadFilter();
+        filt.type = 'lowpass';
+        filt.frequency.setValueAtTime(6000, t);
+        filt.frequency.exponentialRampToValueAtTime(60, t + 0.75);
+        var gN = audioCtx.createGain();
+        gN.gain.setValueAtTime(0.9, t);
+        gN.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
+        noise.connect(filt); filt.connect(gN); gN.connect(masterGain);
+        noise.start(t); noise.stop(t + 0.75);
+
+        // 2. Sub-bass profundo (el "golpe" poderoso)
+        var sub = audioCtx.createOscillator(), gSub = audioCtx.createGain();
+        sub.type = 'sine';
+        sub.frequency.setValueAtTime(150, t);
+        sub.frequency.exponentialRampToValueAtTime(28, t + 0.55);
+        gSub.gain.setValueAtTime(0.85, t);
+        gSub.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+        sub.connect(gSub); gSub.connect(masterGain);
+        sub.start(t); sub.stop(t + 0.6);
+
+        // 3. Onda expansiva media (sawtooth grave distorsionado)
+        var wave = audioCtx.createOscillator(), gW = audioCtx.createGain(), filtW = audioCtx.createBiquadFilter();
+        wave.type = 'sawtooth';
+        wave.frequency.setValueAtTime(90, t);
+        wave.frequency.exponentialRampToValueAtTime(24, t + 0.5);
+        filtW.type = 'lowpass';
+        filtW.frequency.setValueAtTime(500, t);
+        gW.gain.setValueAtTime(0.4, t);
+        gW.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        wave.connect(filtW); filtW.connect(gW); gW.connect(masterGain);
+        wave.start(t); wave.stop(t + 0.5);
+
+        noise.onended = function() { noise.disconnect(); filt.disconnect(); gN.disconnect(); };
+        sub.onended = function() { sub.disconnect(); gSub.disconnect(); };
+        wave.onended = function() { wave.disconnect(); filtW.disconnect(); gW.disconnect(); };
+    } catch(e) {}
+}
+
 function soundImpact() {
     try {
         if (!audioCtx || !masterGain || audioCtx.state !== 'running') return;
@@ -558,11 +735,35 @@ function initGrid() {
 
 function registrarPiezaDestruida() {
     levelProgress += 1;
-    if (levelProgress >= 100) {
+
+    // Barra de Fever progresiva hacia los hitos
+    var feverTarget = 0;
+    if (levelProgress <= 17) {
+        feverTarget = (levelProgress / 17) * 100;
+    } else if (levelProgress <= 33) {
+        feverTarget = ((levelProgress - 17) / (33 - 17)) * 100;
+    }
+    if (!isFeverActive) {
+        feverBar.style.width = feverTarget + '%';
+    }
+
+    // Trigger Fever at 33% (17 pieces) and 66% (33 pieces) of 50
+    if (levelProgress === 17 || levelProgress === 33) {
+        activateFever();
+    }
+
+    var justCompletedLevel = false;
+
+    if (levelProgress >= 50) {
         if (currentLevel < 50) {
             var completedLevel = currentLevel;
             currentLevel++;
             levelProgress = 0;
+
+            // La primera pieza de un nivel nuevo nunca debe ser la bomba verde
+            if (nextP && nextP.color === 5) {
+                nextP.color = pickRandomPieceColor();
+            }
             
             var speedBase = 1.0;
             var speedIncr = 0.02;
@@ -578,43 +779,116 @@ function registrarPiezaDestruida() {
             }
 
             speed = speedBase + ((currentLevel - 1) * speedIncr);
-
-            addTextSplash('LEVEL ' + completedLevel + ' COMPLETED!', '#05FFA1', true);
-            playLevelUpSound();
-            shake = 16.0;
-
-            for (var s = 0; s < SENS; s++) {
-                createExplosionAmpliada(s, 2, COLS[(s % 4) + 1]);
-            }
-
             document.getElementById('val-level').innerText = currentLevel;
+
+            // No festejamos ni vaciamos el tablero acá todavía: eso se difiere hasta que
+            // termine de resolverse esta cadena de matches/bomba (ver postDestructionContinue).
+            nivelRecienCompletado = { completedLevel: completedLevel, newLevel: currentLevel };
+            justCompletedLevel = true;
         } else {
-            levelProgress = 100;
+            levelProgress = 50;
             addTextSplash('MAX LEVEL 50 REACHED!!', '#FF007F', true);
         }
     }
-    levelBar.style.width = levelProgress + '%';
-    levelLabel.innerText = 'NIVEL ' + currentLevel + ' - ' + levelProgress + '%';
+
+    // Si el nivel se acaba de completar, dejamos la barra como estaba (llena) hasta que
+    // arranque la transición visual; si no, la actualizamos con normalidad.
+    if (!justCompletedLevel) {
+        var progPercent = Math.floor((levelProgress / 50) * 100);
+        levelBar.style.width = progPercent + '%';
+        levelLabel.innerText = 'NIVEL ' + currentLevel + ' - ' + progPercent + '%';
+    }
 }
 
-function getNextPieceData() {
-    var ahora = Date.now();
-    
-    var bombProb = 40000;
-    if (gameMode === 'arcade') {
-        if (difficulty === 'adrenaline') bombProb = 25000;
+// Punto único de continuación tras destruir piezas y aplicar gravedad: si en el camino
+// se completó un nivel, arranca la cinemática de transición; si no, sigue la cadena normal.
+function postDestructionContinue(delayMs) {
+    if (nivelRecienCompletado) {
+        var info = nivelRecienCompletado;
+        nivelRecienCompletado = null;
+        setTimeout(function() { iniciarTransicionDeNivel(info); }, delayMs);
     } else {
-        if (practiceSettings.feverFreq === 'FRECUENTE') bombProb = 25000;
-        if (practiceSettings.feverFreq === 'MUY FRECUENTE') bombProb = 12000;
+        setTimeout(function() { animLock = false; checkMatches(); }, delayMs);
+    }
+}
+
+// Hace estallar TODAS las piezas que queden en el tablero (mismo tipo de partícula que
+// usa el Game Over) y vacía el grid.
+function shatterAllPieces() {
+    for (var s = 0; s < SENS; s++) {
+        for (var n = 0; n < N; n++) {
+            if (grid[s][n].color !== 0) {
+                var angle = s * PASO - Math.PI / 2 + PASO / 2 + rotV;
+                var dist = R_INT + n * AN + AN / 2;
+                var px = CX + Math.cos(angle) * dist;
+                var py = CY + Math.sin(angle) * dist;
+                var blastSpeed = 4.5 + Math.random() * 8.0;
+                var spreadAng = angle + (Math.random() - 0.5) * 0.4;
+
+                shatteredPieces.push({
+                    x: px,
+                    y: py,
+                    vx: Math.cos(spreadAng) * blastSpeed,
+                    vy: Math.sin(spreadAng) * blastSpeed,
+                    rot: Math.random() * Math.PI * 2,
+                    vrot: (Math.random() - 0.5) * 0.2,
+                    color: COLS[grid[s][n].color] || '#FF007F',
+                    size: AN * 0.85,
+                    life: 1.0,
+                    decay: 0.012 + Math.random() * 0.012
+                });
+                grid[s][n] = { color: 0, off: 0, flash: 0 };
+            }
+        }
+    }
+}
+
+// Cinemática de fin de nivel: música y cartel de victoria, estallan todas las piezas
+// restantes (como en Game Over), se vacía el tablero, se reinician las barras y arranca
+// el nuevo nivel con su propio cartel.
+function iniciarTransicionDeNivel(info) {
+    if (isGameOver) return;
+    animLock = true;
+
+    // Si el Fever seguía corriendo justo cuando se completó el nivel, lo cortamos limpio
+    if (isFeverActive) {
+        isFeverActive = false;
+        feverPoints = 0;
+        feverEndTime = Date.now();
     }
 
-    var esBomba = bombaFinalPendiente || (rachaSinMatch >= 10) || (ahora - tiempoUltimaBomba >= bombProb);
-    if (esBomba) {
-        rachaSinMatch = 0;
-        tiempoUltimaBomba = ahora;
-        bombaFinalPendiente = false;
-    }
+    addTextSplash('LEVEL ' + info.completedLevel + ' COMPLETED!', '#05FFA1', true);
+    soundVictoryEpic();
+    shake = 16.0;
+    shatterAllPieces();
 
+    setTimeout(function() {
+        levelBar.style.width = '0%';
+        feverBar.style.width = '0%';
+        levelLabel.innerText = 'NIVEL ' + info.newLevel + ' - 0%';
+
+        addTextSplash('NIVEL ' + info.newLevel, '#00F5FF', true);
+
+        animLock = false;
+        if (!isGameOver) spawn();
+    }, 900);
+}
+
+function activateFever() {
+    if (isFeverActive || isGameOver) return;
+    feverPoints = 100;
+    isFeverActive = true;
+    feverStartTime = Date.now();
+    feverEndTime = feverStartTime + feverDurationMs;
+    feverBar.style.width = '100%';
+    addTextSplash('CRITICAL FEVER!', '#FFB800', true);
+    shake = 15;
+    soundFeverTransition(true);
+    startMusic();
+}
+
+// Devuelve solo un color válido (nunca la bomba, índice 5, ni el verde #2 reservado para la bomba)
+function pickRandomPieceColor() {
     var numColors = 4;
     var allowedIndices = [1, 3, 4]; // Magenta, Cyan, Amarilla (Evitar Verde #2)
 
@@ -641,19 +915,46 @@ function getNextPieceData() {
         }
     }
 
-    var randomColor = allowedIndices[Math.floor(Math.random() * allowedIndices.length)];
+    return allowedIndices[Math.floor(Math.random() * allowedIndices.length)];
+}
+
+// forceNoBomb: si es true, esta pieza nunca puede salir como bomba (usado para la 1ra pieza del juego)
+function getNextPieceData(forceNoBomb) {
+    var ahora = Date.now();
+    
+    var bombProb = 40000;
+    if (gameMode === 'arcade') {
+        if (difficulty === 'adrenaline') bombProb = 25000;
+    } else {
+        if (practiceSettings.feverFreq === 'FRECUENTE') bombProb = 25000;
+        if (practiceSettings.feverFreq === 'MUY FRECUENTE') bombProb = 12000;
+    }
+
+    var esBomba = !forceNoBomb && (bombaFinalPendiente || (rachaSinMatch >= 10) || (ahora - tiempoUltimaBomba >= bombProb));
+    if (esBomba) {
+        rachaSinMatch = 0;
+        tiempoUltimaBomba = ahora;
+        bombaFinalPendiente = false;
+    }
+
+    var randomColor = pickRandomPieceColor();
     return { dir: Math.floor(Math.random() * SENS), color: esBomba ? 5 : randomColor };
 }
 
 function spawn() {
     if (isGameOver) return;
-    if (!nextP) nextP = getNextPieceData();
+    // La toda primera pieza del juego (nivel 1) nunca puede ser bomba
+    if (!nextP) nextP = getNextPieceData(true);
     var spdActual = isFeverActive ? speed * 2.2 : speed;
-    piece = { dir: nextP.dir, r: R_EXT + 100, spd: spdActual, color: nextP.color };
+    piece = { dir: nextP.dir, r: R_EXT + R_SPAWN_OFFSET, spd: spdActual, color: nextP.color };
+
+    if (piece.color === 5) {
+        soundBombAppear();
+    }
 
     if (isFeverActive && piece.color !== 5) {
         // En Fever Mode, forzamos que la segunda pieza sea del mismo color para facilitar combos
-        pieceSecondary = { dir: (nextP.dir + 4) % SENS, r: R_EXT + 100, spd: spdActual, color: piece.color };
+        pieceSecondary = { dir: (nextP.dir + 4) % SENS, r: R_EXT + R_SPAWN_OFFSET, spd: spdActual, color: piece.color };
     } else {
         pieceSecondary = null;
     }
@@ -762,29 +1063,10 @@ function triggerGameOver() {
 }
 
 function addFeverProgress(amount) {
-    if (isFeverActive || isGameOver) return;
-    
-    var mult = 1.0;
-    if (gameMode === 'arcade' && difficulty === 'adrenaline') mult = 1.8;
-    if (gameMode === 'practice') {
-        if (practiceSettings.feverFreq === 'FRECUENTE') mult = 1.8;
-        if (practiceSettings.feverFreq === 'MUY FRECUENTE') mult = 3.5;
-    }
-
-    feverPoints += amount * mult;
-    if (feverPoints >= 100) {
-        feverPoints = 100;
-        isFeverActive = true;
-        feverStartTime = Date.now();
-        feverEndTime = feverStartTime + feverDurationMs;
-        feverBar.style.width = '100%';
-        addTextSplash('FEVER 12s EXTREME!', '#FFB800', true);
-        shake = 15;
-        soundFeverTransition(true);
-        startMusic();
-    } else {
-        feverBar.style.width = feverPoints + '%';
-    }
+    // Fever now triggered by level progress milestones in registrarPiezaDestruida
+    // but we can keep a small portion of score-based fever if desired, 
+    // or just leave it empty if milestones are strictly 33% and 66%.
+    // Given the request "que ocurra al 33%... y al 66%", I will disable manual points.
 }
 
 function addScore(pts) {
@@ -899,9 +1181,11 @@ function createExplosionAmpliada(sector, nivel, colorHex) {
 
 function addTextSplash(txt, col, isBig) {
     if (!col) col = '#00F5FF';
+    // Offset para apilar los carteles hacia arriba si aparecen varios juntos y evitar solapamiento
+    var offset = textSplashes.length * 30;
     textSplashes.push({
         txt: txt,
-        y: CY - 10,
+        y: (CY - 10) - offset,
         alpha: 1.0,
         col: col,
         isBig: !!isBig
@@ -912,7 +1196,7 @@ function detonarBomba(sectorCentro, nivelCentro) {
     animLock = true;
     freeze = 22;
     shake = 32.0;
-    soundBombExplode();
+    soundBombDetonateBlast();
 
     var n = nivelCentro;
     var sectoresADestruir = [];
@@ -927,7 +1211,7 @@ function detonarBomba(sectorCentro, nivelCentro) {
         if (r < 0 || r >= N) continue;
         for (var s = 0; s < SENS; s++) {
             var c = grid[s][r].color;
-            if (c === 0 || c >= 5) continue;
+            if (c === 0 || c === 5) continue;
             // Combo horizontal
             if (grid[(s + 1) % SENS][r].color === c && grid[(s + 2) % SENS][r].color === c) {
                 hayComboNatural = true; break;
@@ -959,10 +1243,10 @@ function detonarBomba(sectorCentro, nivelCentro) {
             var r = filasTransformar[i];
             if (r < 0 || r >= N) continue;
             for (var s = 0; s < SENS; s++) {
-                if (grid[s][r].color === 0 || grid[s][r].color >= 5) continue;
+                if (grid[s][r].color === 0 || grid[s][r].color === 5) continue;
                 // Probar si cambiando este color a uno de sus vecinos horizontales crea un match
                 var colorVecino = grid[(s + 1) % SENS][r].color;
-                if (colorVecino > 0 && colorVecino < 5 && grid[(s - 1 + SENS) % SENS][r].color === colorVecino) {
+                if (colorVecino > 0 && colorVecino !== 5 && grid[(s - 1 + SENS) % SENS][r].color === colorVecino) {
                     grid[s][r].color = colorVecino; // ¡Transformación!
                     transformado = true;
                 }
@@ -1003,7 +1287,7 @@ function detonarBomba(sectorCentro, nivelCentro) {
 
         setTimeout(function() {
             aplicarGravedadCascada();
-            setTimeout(function() { animLock = false; checkMatches(); }, 240);
+            postDestructionContinue(240);
         }, 120);
     }, 360);
 }
@@ -1047,11 +1331,27 @@ function procesarAterrizaje(pObj) {
                 soundImpact(); shake = 6.0;
                 if (navigator.vibrate) navigator.vibrate(35);
                 addScore(10);
+                // La pieza ocupó la última fila (fila 8): queda pendiente comprobar
+                // si el chequeo de matches que sigue produce una explosión o no.
+                if (targetN === N - 1) pendienteChequeoUltimaFila = true;
                 return true;
             }
         }
     }
     return false;
+}
+
+// Va marcando "ticks" tipo contador Geiger mientras la bomba cae, cada vez más rápido
+// y agudos a medida que se acerca al anillo de juego (mayor tensión = mayor cercanía).
+function tickBombaSiCorresponde(r) {
+    var traveled = (R_EXT + R_SPAWN_OFFSET) - r;
+    var proximity = Math.min(1, Math.max(0, traveled / R_SPAWN_OFFSET));
+    var tickInterval = 260 - proximity * 190; // de 260ms (lejos) a ~70ms (a punto de aterrizar)
+    var now = Date.now();
+    if (now - lastBombTickTime >= tickInterval) {
+        lastBombTickTime = now;
+        soundBombTick(proximity);
+    }
 }
 
 function update() {
@@ -1080,10 +1380,11 @@ function update() {
             soundFeverTransition(false);
 
             if ((gameMode === 'practice' && practiceSettings.waveEnabled) || (gameMode === 'arcade' && difficulty === 'adrenaline')) {
-                triggerWaveMode();
+                addTextSplash('WAVE MODE INCOMING!', '#FF007F', true);
+                setTimeout(triggerWaveMode, 2000);
+            } else {
+                startMusic();
             }
-
-            startMusic();
         }
     }
 
@@ -1117,11 +1418,13 @@ function update() {
     if (piece) {
         piece.r -= piece.spd;
         if (halos.length < 3) halos.push({ r: piece.r, dir: piece.dir, color: piece.color, a: 0.5 });
+        if (piece.color === 5) tickBombaSiCorresponde(piece.r);
         if (procesarAterrizaje(piece)) { piece = null; algunoAterrizo = true; }
     }
     if (pieceSecondary) {
         pieceSecondary.r -= pieceSecondary.spd;
         if (halos.length < 3) halos.push({ r: pieceSecondary.r, dir: pieceSecondary.dir, color: pieceSecondary.color, a: 0.5 });
+        if (pieceSecondary.color === 5) tickBombaSiCorresponde(pieceSecondary.r);
         if (procesarAterrizaje(pieceSecondary)) { pieceSecondary = null; algunoAterrizo = true; }
     }
 
@@ -1167,54 +1470,61 @@ function checkMatches() {
         matchMark[s].fill(0);
     }
 
+    // Detección de matches por REGIONES CONECTADAS (flood-fill), no solo líneas rectas:
+    // cualquier grupo de 3+ piezas del mismo color conectadas ortogonalmente (arriba/abajo
+    // dentro del sector, izquierda/derecha circular entre sectores vecinos) explota.
+    // Esto admite formas en L, T, zigzag, bloques, etc. -- muchos más combos que antes.
     var match = false, maxTiro = 0, es2x2 = false;
+    var visitedFlood = Array.from({ length: SENS }, function() { return new Uint8Array(N); });
 
-    // 1. Matches 2x2
-    for (var s = 0; s < SENS; s++) {
-        var sNext = (s + 1) % SENS;
-        for (var n = 0; n < N - 1; n++) {
-            var c = grid[s][n].color;
-            if (c !== 0 && c < 5 && c === grid[sNext][n].color && c === grid[s][n + 1].color && c === grid[sNext][n + 1].color) {
-                match = true; es2x2 = true;
-                matchMark[s][n] = matchMark[sNext][n] = matchMark[s][n + 1] = matchMark[sNext][n + 1] = 1;
-            }
-        }
-    }
+    for (var s0 = 0; s0 < SENS; s0++) {
+        for (var n0 = 0; n0 < N; n0++) {
+            var color0 = grid[s0][n0].color;
+            if (visitedFlood[s0][n0] || color0 === 0 || color0 === 5) continue;
 
-    // 2. Matches Verticales
-    for (var s = 0; s < SENS; s++) {
-        var racha = 1;
-        for (var n = 0; n < N; n++) {
-            var c = grid[s][n].color;
-            if (c !== 0 && c < 5 && n < N - 1 && grid[s][n + 1].color === c) racha++;
-            else {
-                if (racha >= 3) { match = true; if (racha > maxTiro) maxTiro = racha; for (var k = n - racha + 1; k <= n; k++) matchMark[s][k] = 1; }
-                racha = 1;
-            }
-        }
-    }
+            var stackS = [s0], stackN = [n0];
+            visitedFlood[s0][n0] = 1;
+            var region = [[s0, n0]];
+            var sectoresUsados = {}, filasUsadas = {};
+            sectoresUsados[s0] = 1; filasUsadas[n0] = 1;
 
-    // 3. Matches Horizontales
-    for (var n = 0; n < N; n++) {
-        for (var s = 0; s < SENS; s++) {
-            var c = grid[s][n].color;
-            if (c === 0 || c >= 5) continue;
-            var celdasCount = 1;
-            for (var step = 1; step < SENS; step++) {
-                var nextS = (s + step) % SENS;
-                if (grid[nextS][n].color === c) celdasCount++;
-                else break;
+            while (stackS.length) {
+                var s = stackS.pop(), n = stackN.pop();
+                var vecinos = [
+                    [(s + 1) % SENS, n],
+                    [(s - 1 + SENS) % SENS, n],
+                    [s, n + 1],
+                    [s, n - 1]
+                ];
+                for (var vi = 0; vi < vecinos.length; vi++) {
+                    var ns = vecinos[vi][0], nn = vecinos[vi][1];
+                    if (nn < 0 || nn >= N) continue;
+                    if (visitedFlood[ns][nn] || grid[ns][nn].color !== color0) continue;
+                    visitedFlood[ns][nn] = 1;
+                    stackS.push(ns); stackN.push(nn);
+                    region.push([ns, nn]);
+                    sectoresUsados[ns] = 1; filasUsadas[nn] = 1;
+                }
             }
-            if (celdasCount >= 3) {
-                match = true; if (celdasCount > maxTiro) maxTiro = celdasCount;
-                for (var step = 0; step < celdasCount; step++) {
-                    matchMark[(s + step) % SENS][n] = 1;
+
+            if (region.length >= 3) {
+                match = true;
+                if (region.length > maxTiro) maxTiro = region.length;
+                for (var ri = 0; ri < region.length; ri++) matchMark[region[ri][0]][region[ri][1]] = 1;
+
+                // Bloque 2x2 perfecto: 4 celdas repartidas en exactamente 2 sectores x 2 filas contiguas
+                if (region.length === 4 && Object.keys(sectoresUsados).length === 2 && Object.keys(filasUsadas).length === 2) {
+                    es2x2 = true;
                 }
             }
         }
     }
 
     if (match) {
+        // Hubo explosión: si venía pendiente el chequeo de "última fila", queda resuelto
+        // a favor del jugador (no pierde, las piezas correspondientes explotan y sigue jugando).
+        pendienteChequeoUltimaFila = false;
+
         animLock = true;
         combo++;
         rachaSinMatch = 0;
@@ -1260,12 +1570,30 @@ function checkMatches() {
                 }
             }
             aplicarGravedadCascada();
-            setTimeout(function() { animLock = false; checkMatches(); }, 240);
+            postDestructionContinue(240);
         }, microDemoraMs);
     } else {
         animLock = false;
-        if (!piece && !pieceSecondary) spawn();
+        // No hubo ninguna explosión: si la pieza que acaba de aterrizar ocupó la
+        // última fila (fila 8) de su sector, recién ahí se pierde la partida.
+        if (pendienteChequeoUltimaFila) {
+            pendienteChequeoUltimaFila = false;
+            triggerGameOver();
+        } else if (!piece && !pieceSecondary) {
+            spawn();
+        }
     }
+}
+
+function lerpColor(a, b, amount) {
+    var ah = parseInt(a.replace(/#/g, ''), 16),
+        ar = ah >> 16, ag = (ah >> 8) & 0xff, ab = ah & 0xff,
+        bh = parseInt(b.replace(/#/g, ''), 16),
+        br = bh >> 16, bg = (bh >> 8) & 0xff, bb = bh & 0xff,
+        rr = ar + amount * (br - ar),
+        rg = ag + amount * (bg - ag),
+        rb = ab + amount * (bb - ab);
+    return '#' + ((1 << 24) + (Math.round(rr) << 16) + (Math.round(rg) << 8) + Math.round(rb)).toString(16).slice(1);
 }
 
 function drawArc(r1, r2, a1, a2, color, flash) {
@@ -1275,28 +1603,30 @@ function drawArc(r1, r2, a1, a2, color, flash) {
 }
 
 function render() {
-    ctx.clearRect(0, 0, 360, 360);
+    ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
     ctx.save();
     if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
 
     ctx.strokeStyle = isFeverActive ? '#FFB800' : 'rgba(255, 0, 127, 0.5)';
     ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.arc(CX, CY, R_EXT + 100, 0, Math.PI * 2);
+    ctx.arc(CX, CY, R_EXT + R_SPAWN_OFFSET, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Previsualización limpia
+    // Previsualización limpia: el anuncio de la próxima pieza aparece en el mismo
+    // radio donde esa pieza va a nacer (el borde exterior), no pegado al anillo de juego.
     if (nextP && !isGameOver && piece) {
         var midR = R_EXT + 45;
         if (piece.r <= midR) {
             var fadeRatio = Math.min(1.0, (midR - piece.r) / 35.0);
             var aC = nextP.dir * PASO - Math.PI / 2 + PASO / 2;
             var pulseAlpha = 0.55 + Math.sin(Date.now() * 0.008) * 0.15;
+            var previewR = R_EXT + R_SPAWN_OFFSET;
 
             ctx.save();
             ctx.translate(CX, CY);
             ctx.globalAlpha = fadeRatio * pulseAlpha;
-            drawArc(R_EXT + 12, R_EXT + 22, aC - PASO/2, aC + PASO/2, COLS[nextP.color]);
+            drawArc(previewR - 8, previewR + 8, aC - PASO/2, aC + PASO/2, COLS[nextP.color]);
             ctx.restore();
         }
     }
@@ -1334,15 +1664,36 @@ function render() {
     ctx.stroke();
 
     // Paso 2: Dibujar celdas ocupadas
+    var warningAny = false;
     for (var s = 0; s < SENS; s++) {
         var a1 = s * PASO - Math.PI / 2, a2 = a1 + PASO;
+        var hasLastRow = grid[s][N - 1].color !== 0;
+        // Aviso temprano: 1 fila antes de la crítica, para dar anticipación extra
+        var hasWarnRow = hasLastRow || (N >= 2 && grid[s][N - 2].color !== 0);
+        if (hasLastRow) warningAny = true;
+
         for (var n = 0; n < N; n++) {
             var c = grid[s][n].color;
             if (c !== 0) {
                 var r1 = R_INT + n * AN + grid[s][n].off, r2 = r1 + AN;
-                drawArc(r1, r2, a1, a2, COLS[c], grid[s][n].flash > 0);
+                var flashCell = grid[s][n].flash > 0;
+                
+                var finalColor = COLS[c];
+                
+                // Efecto de advertencia (latido rojo): intenso en la última fila,
+                // más sutil una fila antes para anticipar el peligro
+                if (hasWarnRow && !flashCell) {
+                    var pulse = (Math.sin(Date.now() * 0.01) + 1) / 2; // 0 a 1
+                    var intensidad = hasLastRow ? 0.8 : 0.35;
+                    finalColor = lerpColor(COLS[c], '#FF0000', pulse * intensidad);
+                }
+                
+                drawArc(r1, r2, a1, a2, finalColor, flashCell);
             }
         }
+    }
+    if (warningAny && running && !isPaused && !isGameOver) {
+        soundWarningAlarm();
     }
 
     // Centro radial abierto
@@ -1420,8 +1771,12 @@ function render() {
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#FFFFFF';
+        // El texto usa el color propio de cada tipo de cartel (con resplandor) para diferenciarlos
+        ctx.shadowColor = t.col;
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = t.col;
         ctx.fillText(t.txt, CX, t.y);
+        ctx.shadowBlur = 0;
 
         ctx.restore();
     }
@@ -1469,7 +1824,9 @@ function startGame() {
     levelBar.style.width = '0%';
     levelLabel.innerText = 'NIVEL 1 - 0%';
 
-    rachaSinMatch = 0; bombaFinalPendiente = false;
+    rachaSinMatch = 0; bombaFinalPendiente = false; pendienteChequeoUltimaFila = false;
+    nivelRecienCompletado = null;
+    lastBombTickTime = 0;
     tiempoUltimaBomba = Date.now(); feverPoints = 0; isFeverActive = false; feverBar.style.width = '0%';
     document.getElementById('val-score').innerText = 0;
 
